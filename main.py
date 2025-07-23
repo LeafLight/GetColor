@@ -16,8 +16,10 @@ from dash.dash_table import DataTable
 import plotly.graph_objects as go
 import logging
 
-# 初始化Dash应用
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+# 初始化Dash应用，并设置suppress_callback_exceptions=True
+app = dash.Dash(__name__, 
+                external_stylesheets=[dbc.themes.BOOTSTRAP],
+                suppress_callback_exceptions=True)
 app.title = "图像颜色分析器"
 
 # 应用布局
@@ -129,7 +131,11 @@ def process_image(upload_contents, pasted_content, pct_threshold, white_thresh, 
     
     # 确定内容来源
     if trigger_id == 'pasted-image-store' and pasted_content:
-        contents = pasted_content
+        # 处理粘贴内容（可能是字符串或字典）
+        if isinstance(pasted_content, dict) and 'content' in pasted_content:
+            contents = pasted_content['content']  # 从字典中提取内容
+        else:
+            contents = pasted_content  # 直接使用字符串内容
         filename = "粘贴的图片"
     elif upload_contents:
         contents = upload_contents
@@ -138,7 +144,12 @@ def process_image(upload_contents, pasted_content, pct_threshold, white_thresh, 
 
     # 从base64编码中提取图像数据
     try:
-        content_type, content_string = contents.split(',')
+        # 检查是否是完整的base64字符串（包含逗号）
+        if ',' in contents:
+            content_type, content_string = contents.split(',')
+        else:
+            content_string = contents  # 如果没有逗号，整个字符串都是内容
+            
         decoded = base64.b64decode(content_string)
         image = Image.open(io.BytesIO(decoded))
     except Exception as e:
@@ -271,9 +282,8 @@ app.clientside_callback(
                     const reader = new FileReader();
                     reader.onload = function(event) {
                         const contents = event.target.result;
-                        // 触发存储更新
-                        const data = {'content': contents, 'timestamp': Date.now()};
-                        dash_clientside.set_props('pasted-image-store', {'data': data});
+                        // 触发存储更新 - 存储为字符串而不是字典
+                        dash_clientside.set_props('pasted-image-store', {'data': contents});
                     };
                     reader.readAsDataURL(blob);
                     e.preventDefault();
