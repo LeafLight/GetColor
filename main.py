@@ -82,14 +82,16 @@ app.layout = dbc.Container([
         dcc.Dropdown(
             id='copy-format',
             options=[
-                {'label': 'R 向量', 'value': 'r'},
-                {'label': 'Python list', 'value': 'py'}
+                {'label': '十六进制 (默认)', 'value': 'hex'},
+                {'label': 'Python list (RGB)', 'value': 'py'},
+                {'label': 'R 向量 (RGB)', 'value': 'r'}
             ],
-            value='py', clearable=False
+            value='hex',  # 将默认值改为十六进制
+            clearable=False
             ),
         dbc.Button("复制选中颜色", id='copy-btn', color="primary", className="mt-2"),
         html.Div(id='copy-status', className="mt-2 text-success")
-        ], width=2)
+        ], width=3)  # 调整宽度以适应更多选项
     ], justify="center", className="mb-4"),
 
     # 图像展示区域
@@ -168,18 +170,21 @@ def process_image(upload_contents, pasted_content, pct_threshold, white_thresh, 
 
     # 创建DataFrame - 确保RGB值为整数
     df = pd.DataFrame(unique_colors.astype(int), columns=['R', 'G', 'B'])
-    df['Count'] = counts
-    df['Percentage'] = (df['Count'] / total_pixels * 100).round(2)
-    df['Hex'] = df.apply(lambda x: '#{:02x}{:02x}{:02x}'.format(
-                     int(x['R']), int(x['G']), int(x['B'])), axis=1)
     # 应用阈值过滤
     # 白像素过滤
     mask_not_white = ~((df['R'] >= white_thresh) &
                        (df['G'] >= white_thresh) &
                        (df['B'] >= white_thresh))
     df = df[mask_not_white]
-    filtered_df = df[df['Percentage'] >= pct_threshold].sort_values('Count', ascending=False)
+    counts_filtered = counts[~mask_not_white]
+    counts = counts[mask_not_white]
 
+    df['Count'] = counts
+    df['Percentage'] = (df['Count'] / (total_pixels - sum(counts_filtered)) * 100).round(2)
+    df['Hex'] = df.apply(lambda x: '#{:02x}{:02x}{:02x}'.format(
+                     int(x['R']), int(x['G']), int(x['B'])), axis=1)
+
+    filtered_df = df[df['Percentage'] >= pct_threshold].sort_values('Count', ascending=False)
     # 创建图像显示
     fig = px.imshow(img_array)
     fig.update_layout(
@@ -298,7 +303,7 @@ app.clientside_callback(
     Input('paste-area', 'n_clicks')
 )
 
-# 修复复制功能
+# 修复并增强复制功能（添加十六进制格式）
 app.clientside_callback(
     """
     function(n_clicks, selected_rows, data, fmt) {
@@ -311,29 +316,37 @@ app.clientside_callback(
             return '请先选择颜色';
         }
         
-        let colors = [];
+        let items = [];
         for (let i = 0; i < selected_rows.length; i++) {
             const rowIndex = selected_rows[i];
             if (rowIndex >= 0 && rowIndex < data.length) {
                 const row = data[rowIndex];
-                if (row && row.R !== undefined && row.G !== undefined && row.B !== undefined) {
-                    colors.push([row.R, row.G, row.B]);
+                if (row) {
+                    items.push(row);
                 }
             }
         }
         
-        if (colors.length === 0) {
+        if (items.length === 0) {
             return '没有有效的颜色数据';
         }
         
         let text = '';
-        if (fmt === 'r') {
-            // R vector
+        if (fmt === 'hex') {
+            // 十六进制格式
+            const hexValues = items.map(item => item.Hex);
+            text = hexValues.join(', ');
+        } else if (fmt === 'py') {
+            // Python list格式 (RGB)
+            const colors = items.map(item => [item.R, item.G, item.B]);
+            text = '[' + colors.map(c => `[${c.join(',')}]`).join(', ') + ']';
+        } else if (fmt === 'r') {
+            // R向量格式 (RGB)
+            const colors = items.map(item => [item.R, item.G, item.B]);
             const inner = colors.map(c => `c(${c.join(',')})`).join(',');
             text = `c(${inner})`;
         } else {
-            // Python list
-            text = '[' + colors.map(c => `[${c.join(',')}]`).join(', ') + ']';
+            return '未知的复制格式';
         }
         
         // 复制到剪贴板
@@ -344,7 +357,7 @@ app.clientside_callback(
         document.execCommand('copy');
         document.body.removeChild(textArea);
         
-        return '已复制 ' + colors.length + ' 种颜色';
+        return '已复制 ' + items.length + ' 种颜色 (' + fmt + ')';
     }
     """,
     Output('copy-status', 'children'),
@@ -381,6 +394,9 @@ app.clientside_callback(
                 padding: 15px;
                 background: white;
                 box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            }
+            .copy-format-dropdown .Select-control {
+                min-height: 38px;
             }
         `;
         document.head.appendChild(style);
