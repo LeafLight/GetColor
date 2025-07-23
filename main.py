@@ -53,16 +53,41 @@ app.layout = dbc.Container([
     # 阈值控制
     dbc.Row([
         dbc.Col([
-            html.Label("像素数量阈值 (只显示超过此数量的颜色):"),
+            html.Label("像素数量阈值 (只显示超过此百分比的颜色):"),
             dcc.Slider(
-                id='threshold-slider',
+                id='percentage-slider',
                 min=0,
-                max=100,
-                step=1,
-                value=36,
-                marks={i: str(i) for i in range(0, 101, 10)}
+                max=10,
+                step=0.1,
+                value=1,
+                marks={i: str(i) for i in range(0, 11, 1)},
             )
-        ], width=8)
+        ], width=4),
+
+        dbc.Col([
+            html.Label("白色过滤阈值（RGB≥该值视为白色，不计入）:"),
+            dcc.Slider(
+                id='white-filter-slider', 
+                min=220, 
+                max=255, 
+                step=1,
+                value=252, 
+                marks={i: str(i) for i in range(220, 256, 5)}
+            )
+        ], width=4),
+        dbc.Col([
+        html.Label("多选复制格式:"),
+        dcc.Dropdown(
+            id='copy-format',
+            options=[
+                {'label': 'R 向量', 'value': 'r'},
+                {'label': 'Python list', 'value': 'py'}
+            ],
+            value='py', clearable=False
+            ),
+        dbc.Button("复制选中颜色", id='copy-btn', color="primary", className="mt-2"),
+        html.Div(id='copy-status', className="mt-2 text-success")
+        ], width=2)
     ], justify="center", className="mb-4"),
 
     # 图像展示区域
@@ -79,7 +104,8 @@ app.layout = dbc.Container([
             html.H4("主要颜色分析结果", className="text-center mb-3"),
             html.Div(id='color-table-container'),
             html.Div(id='color-chart-container', className="mt-4"),
-            html.Div(id='dummy-output', style={'display': 'none'})
+            html.Div(id='dummy-output', style={'display': 'none'}),
+            dcc.Store(id='pasted-image-store', data='')  # 存储粘贴的图像
         ], width=10)
     ], justify="center")
 ], fluid=True)
@@ -89,25 +115,34 @@ app.layout = dbc.Container([
     Output('display-image', 'figure'),
     Output('color-table-container', 'children'),
     Output('color-chart-container', 'children'),
+    Output('pasted-image-store', 'data', allow_duplicate=True),  # 重置粘贴存储
     Input('upload-image', 'contents'),
-    Input('threshold-slider', 'value'),
+    Input('pasted-image-store', 'data'),  # 添加粘贴输入
+    Input('percentage-slider', 'value'),
+    Input('white-filter-slider', 'value'),
     State('upload-image', 'filename'),
     prevent_initial_call=True
 )
-def process_image(contents, threshold, filename):
+def process_image(upload_contents, pasted_content, pct_threshold, white_thresh, filename):
     ctx = dash.callback_context
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-
-    if not contents:
-        return no_update, no_update, no_update
+    
+    # 确定内容来源
+    if trigger_id == 'pasted-image-store' and pasted_content:
+        contents = pasted_content
+        filename = "粘贴的图片"
+    elif upload_contents:
+        contents = upload_contents
+    else:
+        return no_update, no_update, no_update, no_update
 
     # 从base64编码中提取图像数据
-    content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
     try:
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
         image = Image.open(io.BytesIO(decoded))
     except Exception as e:
-        return no_update, html.Div(f"错误: {str(e)}", className="text-danger"), no_update
+        return no_update, html.Div(f"错误: {str(e)}", className="text-danger"), no_update, no_update
 
     # 将图像转换为RGB数组
     img_array = np.array(image.convert('RGB'))
@@ -127,12 +162,17 @@ def process_image(contents, threshold, filename):
     df['Hex'] = df.apply(lambda x: '#{:02x}{:02x}{:02x}'.format(
                      int(x['R']), int(x['G']), int(x['B'])), axis=1)
     # 应用阈值过滤
-    filtered_df = df[df['Count'] >= threshold].sort_values('Count', ascending=False)
+    # 白像素过滤
+    mask_not_white = ~((df['R'] >= white_thresh) &
+                       (df['G'] >= white_thresh) &
+                       (df['B'] >= white_thresh))
+    df = df[mask_not_white]
+    filtered_df = df[df['Percentage'] >= pct_threshold].sort_values('Count', ascending=False)
 
     # 创建图像显示
     fig = px.imshow(img_array)
     fig.update_layout(
-        title=f"上传的图片: {filename}",
+        title=f"图片: {filename}",
         title_x=0.5,
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
@@ -154,7 +194,9 @@ def process_image(contents, threshold, filename):
                 {"name": "RGB值", "id": "RGB"},
                 {"name": "像素数量", "id": "Count", "type": "numeric", "format": {"specifier": ","}},
                 {"name": "占比(%)", "id": "Percentage", "type": "numeric", "format": {"specifier": ".2f"}},
-                {"name": "操作", "id": "Actions", "presentation": "markdown"}
+                {"name": "R", "id": "R"},      # 隐藏列，用于复制
+                {"name": "G", "id": "G"},
+                {"name": "B", "id": "B"}
             ],
             data=[
                 {
@@ -163,36 +205,21 @@ def process_image(contents, threshold, filename):
                     "RGB": f"({row['R']}, {row['G']}, {row['B']})",
                     "Count": row['Count'],
                     "Percentage": row['Percentage'],
-                    "Actions": f"<button class='btn btn-sm btn-outline-secondary' onclick=\"navigator.clipboard.writeText('{row['Hex']}');\">复制</button>"
+                    "R": int(row['R']),
+                    "G": int(row['G']),
+                    "B": int(row['B'])
                 }
                 for _, row in filtered_df.iterrows()
             ],
-            style_cell={
-                'textAlign': 'center',
-                'padding': '10px',
-                'fontFamily': 'Arial, sans-serif'
-            },
-            style_header={
-                'fontWeight': 'bold',
-                'backgroundColor': '#f8f9fa',
-                'border': '1px solid #dee2e6'
-            },
-            style_data={
-                'border': '1px solid #dee2e6'
-            },
-            style_table={
-                'overflowX': 'auto',
-                'boxShadow': '0 4px 6px rgba(0,0,0,0.1)',
-                'borderRadius': '5px'
-            },
+            row_selectable='multi',
+            selected_rows=[],           # 默认全不选
+            hidden_columns=['R', 'G', 'B'],
+            style_cell={'textAlign': 'center', 'padding': '10px', 'fontFamily': 'Arial, sans-serif'},
+            style_header={'fontWeight': 'bold', 'backgroundColor': '#f8f9fa'},
+            style_table={'overflowX': 'auto', 'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'},
             markdown_options={"html": True},
             page_action='none',
-            style_data_conditional=[
-                {
-                    'if': {'row_index': 'odd'},
-                    'backgroundColor': 'rgb(248, 248, 248)'
-                }
-            ]
+            style_data_conditional=[{'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(248, 248, 248)'}]
         )
         
         # 创建颜色占比柱状图
@@ -230,7 +257,7 @@ def process_image(contents, threshold, filename):
             config={'displayModeBar': True}
         )
 
-    return fig, table, bar_chart
+    return fig, table, bar_chart, ''  # 重置粘贴存储
 
 # 处理粘贴事件
 app.clientside_callback(
@@ -244,13 +271,9 @@ app.clientside_callback(
                     const reader = new FileReader();
                     reader.onload = function(event) {
                         const contents = event.target.result;
-                        // 触发上传组件更新
-                        document.getElementById('upload-image').dispatchEvent(
-                            new CustomEvent('dash_upload', {detail: {
-                                files: [new File([blob], 'pasted-image.png')],
-                                content: contents
-                            }})
-                        );
+                        // 触发存储更新
+                        const data = {'content': contents, 'timestamp': Date.now()};
+                        dash_clientside.set_props('pasted-image-store', {'data': data});
                     };
                     reader.readAsDataURL(blob);
                     e.preventDefault();
@@ -263,6 +286,62 @@ app.clientside_callback(
     """,
     Output('paste-area', 'children'),
     Input('paste-area', 'n_clicks')
+)
+
+# 修复复制功能
+app.clientside_callback(
+    """
+    function(n_clicks, selected_rows, data, fmt) {
+        if (n_clicks === 0 || !selected_rows || !data) {
+            return '';
+        }
+        
+        // 确保selected_rows是数组且不为空
+        if (!Array.isArray(selected_rows) || selected_rows.length === 0) {
+            return '请先选择颜色';
+        }
+        
+        let colors = [];
+        for (let i = 0; i < selected_rows.length; i++) {
+            const rowIndex = selected_rows[i];
+            if (rowIndex >= 0 && rowIndex < data.length) {
+                const row = data[rowIndex];
+                if (row && row.R !== undefined && row.G !== undefined && row.B !== undefined) {
+                    colors.push([row.R, row.G, row.B]);
+                }
+            }
+        }
+        
+        if (colors.length === 0) {
+            return '没有有效的颜色数据';
+        }
+        
+        let text = '';
+        if (fmt === 'r') {
+            // R vector
+            const inner = colors.map(c => `c(${c.join(',')})`).join(',');
+            text = `c(${inner})`;
+        } else {
+            // Python list
+            text = '[' + colors.map(c => `[${c.join(',')}]`).join(', ') + ']';
+        }
+        
+        // 复制到剪贴板
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        
+        return '已复制 ' + colors.length + ' 种颜色';
+    }
+    """,
+    Output('copy-status', 'children'),
+    Input('copy-btn', 'n_clicks'),
+    State('color-table', 'selected_rows'),
+    State('color-table', 'data'),
+    State('copy-format', 'value')
 )
 
 # 添加全局样式
