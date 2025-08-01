@@ -20,6 +20,7 @@ import logging
 app = dash.Dash(__name__, 
                 external_stylesheets=[dbc.themes.BOOTSTRAP],
                 suppress_callback_exceptions=True)
+server = app.server
 app.title = "图像颜色分析器"
 
 # 应用布局
