@@ -18,7 +18,7 @@ pip install dash pandas plotly pillow numpy dash-bootstrap-components
 
 - Runing the app.
 ```bash
-py main.ap
+py app.py
 ```
 
 - Open `http://127.0.0.1:8050/`
@@ -27,4 +27,4 @@ py main.ap
 
 ![example](./src_README/Example.png)
 
-example picture from :[Microbial metabolite 3-indolepropionic acid alleviated PD pathologies by decreasing enteric glia cell gliosis via suppressing IL-13Rα1 related signaling pathways](10.1016/j.apsb.2025.02.029)
+example picture from :[Microbial metabolite 3-indolepropionic acid alleviated PD pathologies by decreasing enteric glia cell gliosis via suppressing IL-13Rα1 related signaling pathways](https://www.sciencedirect.com/science/article/pii/S2211383525001066)
